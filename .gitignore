@@ -1,3 +1,4 @@
+.gitignore
 errors.log
 config.json
 /tests
