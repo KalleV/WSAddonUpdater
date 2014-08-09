@@ -6,8 +6,6 @@
 import sys
 sys.dont_write_bytecode = True  # Prevents Python from creating __PyCache__ folders
 
-import pytest
-
 import os
 from io import BytesIO  # used for zipfile extraction
 from zipfile import ZipFile, BadZipfile
@@ -23,6 +21,8 @@ import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
 import threading
 import queue
+
+import pytest
 
 CURSEFORGE_ADDON_PAGE = 'http://wildstar.curseforge.com/ws-addons'
 MAIN_ADDON_PAGE = 'http://www.curse.com/ws-addons/wildstar'
@@ -223,6 +223,7 @@ class AddonSearch(threading.Thread):
 
     BASE_CURSE_URL = 'http://www.curse.com/search/ws-addons'
     BASE_URL_CURSEFORGE = 'http://wildstar.curseforge.com/'
+    SEARCH_START = "Searching for addon updates..."
 
     def __init__(self, addons, queue):
         threading.Thread.__init__(self)
@@ -232,9 +233,10 @@ class AddonSearch(threading.Thread):
         self._retrieved_addons = {}
 
     def run(self):
-        print("searching for addons", self._addons)
+        self.queue.put_message(Message(msg=self.SEARCH_START))
         for addon in self._addons:
-            print("searching for addon", addon)
+            msg = Message(msg="Searching for '{0}'...".format(addon))
+            self.queue.put_message(msg)
             online_addon = self.find(addon)
             if online_addon:
                 task = Message(current_addon=addon, online_addon=online_addon)
@@ -266,8 +268,7 @@ class AddonSearch(threading.Thread):
                 self._retrieved_addons[name] = addon
                 return addon
         self._no_results_found_with(addon_name)
-        # Add to message queue
-        print('Unable to find \'{0}\' on Curse.'.format(addon_name))
+        self.queue.put_warning(Message(msg="Unable to find '{0}' on Curse.".format(addon_name)))
 
     def _search_request(self, addon_name):
         search_terms = {
@@ -275,17 +276,11 @@ class AddonSearch(threading.Thread):
             self._split_by_camel_case(addon_name),
             self._remove_last_word(addon_name)
         }
-
         for search_term in search_terms:
             if search_term:
-                print("searching for", addon_name, "with keyword: ", search_term)
-                msg = Message(msg='Searching for {0} with keyword {1}'.format(addon_name, search_term))
-                self.queue.put_message(msg)
-
                 url_params = {'search':search_term}
                 page = http_request(self.BASE_CURSE_URL, url_params)
                 results = self._results_found_on(page)
-
                 return page if results else self._no_results_found_with(addon_name)
 
     def _no_results_found_with(self, addon_name):
@@ -337,7 +332,7 @@ class AddonSearch(threading.Thread):
 
     def _find_addon_date(self, url):
         """
-        Returns an integer such as 10512508, that represents the date in epoch time,
+        Returns an integer such as 10512508 that represents the date in seconds,
         otherwise None.
         """
         page = http_request(url)
@@ -359,44 +354,25 @@ class AddonSearch(threading.Thread):
 class Downloader(threading.Thread):
 
     def __init__(self, addon_directory, queue):
-        #assert os.path.exists(addon_directory) and os.path.isdir(addon_directory)
         threading.Thread.__init__(self)
         self._queue = queue
         self._addon_directory = addon_directory
         self._config = Config()
 
     def run(self):
-   #     self.queue.put(Message(msg='Searching for updates...'))
-   #     pending_downloads = self._get_pending_downloads()
-   #     updated_addons = []
-   #     self.queue.put(Message(msg="Updating addons..."))
-        #for addon_name in pending_downloads:
         while self._queue.task_available():
             try:
-                print(self._queue.task_available())
                 task = self._queue.get_task()
-                print('task', task)
                 current_addon = task.get('current_addon')
                 online_addon = task.get('online_addon')
 
                 if current_addon and online_addon:
-                    print("downloading addon", online_addon)
                     msg = Message(msg='Downloading {0}...'.format(online_addon.get_name()))
                     self._queue.put_message(msg)
                     self._extract_zipfile(online_addon.get_full_url())
                     self._config.update_addon(online_addon)
             except queue.Empty:
                 pass
-            # addon = self._search.find(addon_name)
-            # self._extract_zipfile(addon.get_full_url())
-            # updated_addons.append(addon)
-            #
-            # msg = Message(msg="Updated '{0}'...".format(addon_name),
-            #               total_downloads=len(pending_downloads))
-            # self.queue.put(msg)
-
-#        self.queue.put(Message(msg='Updates complete!'))
- #       self._config.add_addons(updated_addons)
 
     def _get_pending_downloads(self):
         download_list = []
@@ -409,6 +385,7 @@ class Downloader(threading.Thread):
         assert isinstance(addon_name, str), 'The addon name must be a string not \'{0}\''.format(addon_name)
         installed_addon = self._config.get_addon(addon_name)
         online_addon = self._search.find(addon_name)
+
         # DEBUG
         if not installed_addon or (installed_addon.get_date() == online_addon.get_date()):
             return True
@@ -450,7 +427,6 @@ class DownloaderInterface(tk.Tk):
             return messagebox.showerror("Error", "Select a valid Wildstar addon directory first.")
 
         self.button.config(state='disabled')
-        self.queue.put_message(Message(msg="Starting addon searching and updating..."))
 
         self._addons = []
         for addon_name in os.listdir(self._directory):
@@ -461,21 +437,24 @@ class DownloaderInterface(tk.Tk):
         self.thread2 = Downloader(self._directory, self.queue)
 
         self.progressbar['value'] = 0.0
-        self.progressbar['maximum'] = 1.0 #self.thread.get_pending_downloads()
+        self.progressbar['maximum'] = 1.0
 
         self.thread1.start()
         self.periodic_call()
 
     def periodic_call(self):
-       # print(threading.active_count())
         self._check_download_queue()
         self._check_message_queue()
 
         if self.thread1.is_alive() or self.thread2.is_alive():
             self.after(100, self.periodic_call)
-        elif not self.thread1.is_alive() and not self.thread2.is_alive():
+        elif not(self.thread1.is_alive() and self.thread2.is_alive()):
             self.button.config(state='active')
             self.progressbar['value'] = self.progressbar['maximum']
+            self._update_listbox("\nUnable to find updates for the following addons: ")
+            while self.queue.warning_available():
+                msg = self.queue.get_warning()
+                self._update_listbox(msg.get('msg'))
 
     def _check_download_queue(self):
         if self.queue.task_available() and not self.thread2.is_alive():
@@ -521,6 +500,8 @@ class DownloaderInterface(tk.Tk):
         self.directory_button.pack(padx=10, pady=10, side=tk.LEFT, expand=True, fill=tk.BOTH)
         self.quit_button.pack(padx=10, pady=10, side=tk.RIGHT, expand=True, fill=tk.BOTH)
 
+    def _update_listbox(self, message, pos='end'):
+        self.listbox.insert(pos, message)
 
 if __name__ == "__main__":
     pytest.main('-s')  # Run tests (the '-s' flag allows print statements to work)
