@@ -10,10 +10,9 @@ import json
 import os
 
 from io import BytesIO
-from zipfile import ZipFile, BadZipfile
+import zipfile
 from bs4 import BeautifulSoup, SoupStrainer
 from urllib.parse import urljoin
-from collections import namedtuple
 
 import tkinter as tk
 import tkinter.ttk as ttk
@@ -215,6 +214,8 @@ class Message(object):
 
     def get(self, key):
         return self._messages.get(key)
+    def __getitem__(self, key):
+        return self.get(key)
     def __str__(self):
         return str(self._messages)
     def __repr__(self):
@@ -235,8 +236,7 @@ class AddonSearch(threading.Thread):
 
     def run(self):
         for addon in self._addons:
-            msg = Message(msg="Searching for '{0}'...".format(addon),
-                          total_downloads=len(self._addons))
+            msg = Message(msg="Searching for '{0}'...".format(addon))
             self.queue.put_message(msg)
             online_addon = self.find(addon)
             if online_addon:
@@ -368,7 +368,8 @@ class Downloader(threading.Thread):
 
                 if (current_addon and online_addon) and \
                 self._update_available(current_addon, online_addon):
-                    msg = Message(msg='Downloading {0}...'.format(online_addon.get_name()))
+                    msg = Message(msg='Downloading {0}...'.format(online_addon.get_name()),
+                                  new_downloads=1)
                     self._queue.put_message(msg)
                     self._extract_zipfile(online_addon.get_full_url())
                     self._config.update_addon(online_addon)
@@ -394,9 +395,9 @@ class Downloader(threading.Thread):
     def _extract_zipfile(self, url):
         try:
             response = http_request(url)
-            with ZipFile(BytesIO(response.content)) as zip_file:
+            with zipfile.ZipFile(BytesIO(response.content)) as zip_file:
                 zip_file.extractall(path=self._addon_directory)
-        except (TypeError, BadZipFile) as err:
+        except (TypeError, zipfile.BadZipFile) as err:
             log(err)
 
 
@@ -424,11 +425,11 @@ class DownloaderInterface(tk.Tk):
         self.queue.put_message(Message(msg=self.SEARCH_START))
         self._addons = self._get_addons(self._directory)
 
+        self.progressbar['value'] = 0.0
+        self.progressbar['maximum'] = len(self._addons)#1.0
+
         self.thread1 = AddonSearch(self._addons, self.queue)
         self.thread2 = Downloader(self._directory, self.queue)
-
-        self.progressbar['value'] = 0.0
-        self.progressbar['maximum'] = 1.0
 
         self.thread1.start()
         self.periodic_call()
@@ -453,10 +454,11 @@ class DownloaderInterface(tk.Tk):
         while self.queue.message_available():
             try:
                 msg = self.queue.get_message()
-                self._update_listbox(msg.get('msg'))
-                total_downloads = msg.get('total_downloads')
+                self._update_listbox(msg['msg'])
+                total_downloads = msg['new_downloads']
                 if total_downloads:
-                    self.progressbar.step(1 / total_downloads)
+                    self.progressbar['maximum'] += total_downloads
+                self.progressbar.step(1)
             except Queue.Empty:
                 pass
 
